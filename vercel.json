@@ -1,7 +1,3 @@
 {
-  "functions": {
-    "api/webhook.py": {
-      "runtime": "python3.12"
-    }
-  }
+  "version": 2
 }
