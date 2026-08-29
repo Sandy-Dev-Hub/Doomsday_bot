@@ -81,7 +81,7 @@ def reply_with_movie(chat_id, tmdb_id):
     overview = movie.get("overview", "No description available.")
     poster_path = movie.get("poster_path")
 
-    watch_url = f"{SITE_BASE_URL}/{tmdb_id}"
+    watch_url = SITE_BASE_URL
     caption = f"🎬 *{title}* ({year})\n⭐ Rating: {rating}/10\n\n{overview}"
 
     if poster_path:
