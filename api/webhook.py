@@ -66,7 +66,8 @@ def send_message(chat_id, text):
     )
 
 
-def send_photo(chat_id, photo_url, caption):
+def send_photo_with_button(chat_id, photo_url, caption, button_text, button_url):
+    keyboard = {"inline_keyboard": [[{"text": button_text, "url": button_url}]]}
     requests.post(
         f"{TELEGRAM_API}/sendPhoto",
         json={
@@ -74,6 +75,20 @@ def send_photo(chat_id, photo_url, caption):
             "photo": photo_url,
             "caption": caption,
             "parse_mode": "Markdown",
+            "reply_markup": keyboard,
+        },
+        timeout=10,
+    )
+
+def send_text_with_button(chat_id, text, button_text, button_url):
+    keyboard = {"inline_keyboard": [[{"text": button_text, "url": button_url}]]}
+    requests.post(
+        f"{TELEGRAM_API}/sendMessage",
+        json={
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "Markdown",
+            "reply_markup": keyboard,
         },
         timeout=10,
     )
@@ -97,13 +112,13 @@ def reply_with_movie(chat_id, tmdb_id, user_id=None, username=None, search_query
     poster_path = movie.get("poster_path")
 
     watch_url = f"{SITE_BASE_URL}/{tmdb_id}"
-    caption = f"🎬 *{title}* ({year})\n⭐ Rating: {rating}/10\n\n{overview}\n\n🍿 **Watch Now:** {watch_url}"
+    caption = f"🎬 *{title}* ({year})\n⭐ Rating: {rating}/10\n\n{overview}"
 
     if poster_path:
         poster_url = f"{TMDB_IMAGE_BASE}{poster_path}"
-        send_photo(chat_id, poster_url, caption)
+        send_photo_with_button(chat_id, poster_url, caption, "▶️ Watch Now", watch_url)
     else:
-        send_message(chat_id, caption)
+        send_text_with_button(chat_id, caption, "▶️ Watch Now", watch_url)
 
     # Log this as a "watch_click" since we generated a Watch Now link for the user.
     log_event(user_id or chat_id, username, "watch_click", query=search_query, movie_title=title)
