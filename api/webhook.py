@@ -25,6 +25,35 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 TMDB_SEARCH_URL = "https://api.themoviedb.org/3/search/movie"
 TMDB_DETAILS_URL = "https://api.themoviedb.org/3/movie/{}"
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_ANON_KEY")
+
+
+def log_bot_event(user_id, username, event_type, query=None, movie_title=None):
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return
+        
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal"
+    }
+    
+    data = {
+        "user_id": str(user_id),
+        "username": username,
+        "event_type": event_type,
+        "query": query,
+        "movie_title": movie_title,
+    }
+    
+    url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/bot_events"
+    try:
+        # We fire and forget with a short timeout to not block Vercel
+        requests.post(url, headers=headers, json=data, timeout=3)
+    except Exception as e:
+        print(f"Error logging to supabase: {e}")
 
 
 def send_message(chat_id, text):
@@ -64,7 +93,7 @@ def send_text_with_button(chat_id, text, button_text, button_url):
     )
 
 
-def reply_with_movie(chat_id, tmdb_id):
+def reply_with_movie(chat_id, tmdb_id, username=""):
     resp = requests.get(
         TMDB_DETAILS_URL.format(tmdb_id),
         params={"api_key": TMDB_API_KEY},
@@ -81,7 +110,7 @@ def reply_with_movie(chat_id, tmdb_id):
     overview = movie.get("overview", "No description available.")
     poster_path = movie.get("poster_path")
 
-    watch_url = SITE_BASE_URL
+    watch_url = f"{SITE_BASE_URL}?utm_source=telegram_bot"
     caption = f"🎬 *{title}* ({year})\n⭐ Rating: {rating}/10\n\n{overview}"
 
     if poster_path:
@@ -89,9 +118,13 @@ def reply_with_movie(chat_id, tmdb_id):
         send_photo_with_button(chat_id, poster_url, caption, "▶️ Watch Now", watch_url)
     else:
         send_text_with_button(chat_id, caption, "▶️ Watch Now", watch_url)
+        
+    log_bot_event(chat_id, username, "watch_click", movie_title=title)
 
 
-def handle_search(chat_id, query):
+def handle_search(chat_id, query, username=""):
+    log_bot_event(chat_id, username, "search", query=query)
+    
     resp = requests.get(
         TMDB_SEARCH_URL,
         params={"api_key": TMDB_API_KEY, "query": query, "include_adult": False},
@@ -107,7 +140,7 @@ def handle_search(chat_id, query):
         return
 
     top_match = results[0]
-    reply_with_movie(chat_id, top_match["id"])
+    reply_with_movie(chat_id, top_match["id"], username)
 
 
 def process_update(update: dict):
@@ -116,12 +149,14 @@ def process_update(update: dict):
         return
 
     chat_id = message["chat"]["id"]
+    username = message["chat"].get("username", "")
     text = message.get("text", "").strip()
 
     if not text:
         return
 
     if text.startswith("/start"):
+        log_bot_event(chat_id, username, "start")
         send_message(
             chat_id,
             "🎬 Welcome to the Movie Bot!\n\n"
@@ -134,9 +169,9 @@ def process_update(update: dict):
         if len(parts) < 2:
             send_message(chat_id, "Usage: /id <tmdb_id>\nExample: /id 27205")
             return
-        reply_with_movie(chat_id, parts[1].strip())
+        reply_with_movie(chat_id, parts[1].strip(), username)
     else:
-        handle_search(chat_id, text)
+        handle_search(chat_id, text, username)
 
 
 class handler(BaseHTTPRequestHandler):
