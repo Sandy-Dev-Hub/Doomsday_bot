@@ -21,39 +21,40 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TMDB_API_KEY = os.environ.get("TMDB_API_KEY")
 SITE_BASE_URL = os.environ.get("SITE_BASE_URL", "https://yoursite.com/movie")
 
+# Supabase (used for logging bot usage -> powers the analytics dashboard)
+SUPABASE_URL = os.environ.get("SUPABASE_URL")            # e.g. https://xxxx.supabase.co
+SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")  # service_role key (secret!)
+
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+
+
+def log_event(user_id, username, event_type, query=None, movie_title=None):
+    """Fire-and-forget log of a bot interaction, for the analytics dashboard.
+    Never raises - a logging failure should never break the bot itself."""
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        return
+    try:
+        requests.post(
+            f"{SUPABASE_URL}/rest/v1/bot_events",
+            headers={
+                "apikey": SUPABASE_SERVICE_KEY,
+                "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "user_id": user_id,
+                "username": username,
+                "event_type": event_type,
+                "query": query,
+                "movie_title": movie_title,
+            },
+            timeout=5,
+        )
+    except Exception as e:
+        print(f"log_event failed: {e}")
 TMDB_SEARCH_URL = "https://api.themoviedb.org/3/search/movie"
 TMDB_DETAILS_URL = "https://api.themoviedb.org/3/movie/{}"
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_ANON_KEY")
-
-
-def log_bot_event(user_id, username, event_type, query=None, movie_title=None):
-    if not SUPABASE_URL or not SUPABASE_KEY:
-        return
-        
-    headers = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Content-Type": "application/json",
-        "Prefer": "return=minimal"
-    }
-    
-    data = {
-        "user_id": str(user_id),
-        "username": username,
-        "event_type": event_type,
-        "query": query,
-        "movie_title": movie_title,
-    }
-    
-    url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/bot_events"
-    try:
-        # We fire and forget with a short timeout to not block Vercel
-        requests.post(url, headers=headers, json=data, timeout=3)
-    except Exception as e:
-        print(f"Error logging to supabase: {e}")
 
 
 def send_message(chat_id, text):
@@ -93,7 +94,7 @@ def send_text_with_button(chat_id, text, button_text, button_url):
     )
 
 
-def reply_with_movie(chat_id, tmdb_id, username=""):
+def reply_with_movie(chat_id, tmdb_id, user_id=None, username=None, search_query=None):
     resp = requests.get(
         TMDB_DETAILS_URL.format(tmdb_id),
         params={"api_key": TMDB_API_KEY},
@@ -110,7 +111,7 @@ def reply_with_movie(chat_id, tmdb_id, username=""):
     overview = movie.get("overview", "No description available.")
     poster_path = movie.get("poster_path")
 
-    watch_url = f"{SITE_BASE_URL}?utm_source=telegram_bot"
+    watch_url = f"{SITE_BASE_URL}/{tmdb_id}"
     caption = f"🎬 *{title}* ({year})\n⭐ Rating: {rating}/10\n\n{overview}"
 
     if poster_path:
@@ -118,13 +119,14 @@ def reply_with_movie(chat_id, tmdb_id, username=""):
         send_photo_with_button(chat_id, poster_url, caption, "▶️ Watch Now", watch_url)
     else:
         send_text_with_button(chat_id, caption, "▶️ Watch Now", watch_url)
-        
-    log_bot_event(chat_id, username, "watch_click", movie_title=title)
+
+    # Log this as a "watch_click" since we generated a Watch Now link for the user.
+    log_event(user_id or chat_id, username, "watch_click", query=search_query, movie_title=title)
 
 
-def handle_search(chat_id, query, username=""):
-    log_bot_event(chat_id, username, "search", query=query)
-    
+def handle_search(chat_id, query, user_id=None, username=None):
+    log_event(user_id or chat_id, username, "search", query=query)
+
     resp = requests.get(
         TMDB_SEARCH_URL,
         params={"api_key": TMDB_API_KEY, "query": query, "include_adult": False},
@@ -140,7 +142,7 @@ def handle_search(chat_id, query, username=""):
         return
 
     top_match = results[0]
-    reply_with_movie(chat_id, top_match["id"], username)
+    reply_with_movie(chat_id, top_match["id"], user_id=user_id, username=username, search_query=query)
 
 
 def process_update(update: dict):
@@ -149,29 +151,31 @@ def process_update(update: dict):
         return
 
     chat_id = message["chat"]["id"]
-    username = message["chat"].get("username", "")
     text = message.get("text", "").strip()
+    from_user = message.get("from", {})
+    user_id = from_user.get("id", chat_id)
+    username = from_user.get("username") or from_user.get("first_name")
 
     if not text:
         return
 
     if text.startswith("/start"):
-        log_bot_event(chat_id, username, "start")
+        log_event(user_id, username, "start")
         send_message(
             chat_id,
-            "🎬 Welcome to the Movie Bot!\n\n"
-            "Send me a movie name (e.g. 'Inception') and I'll find it for you, "
-            "or use /id <tmdb_id> if you already know the TMDB ID.\n\n"
-            "I'll give you the poster, details, and a direct link to watch it.",
+            "👋 Welcome to XilfFlix Movie Bot!\n\n"
+            "Simply send me the name of any movie (add the year for best "
+            "results, e.g. \"Dune 2021\"), and I'll find the details and a "
+            "direct link to watch it on XilfFlix! 🎬🍿",
         )
     elif text.startswith("/id"):
         parts = text.split(maxsplit=1)
         if len(parts) < 2:
             send_message(chat_id, "Usage: /id <tmdb_id>\nExample: /id 27205")
             return
-        reply_with_movie(chat_id, parts[1].strip(), username)
+        reply_with_movie(chat_id, parts[1].strip(), user_id=user_id, username=username)
     else:
-        handle_search(chat_id, text, username)
+        handle_search(chat_id, text, user_id=user_id, username=username)
 
 
 class handler(BaseHTTPRequestHandler):
