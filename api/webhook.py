@@ -15,6 +15,7 @@ ENV VARS (set these in Vercel dashboard -> Project -> Settings -> Environment Va
 import os
 import json
 import requests
+import re
 from http.server import BaseHTTPRequestHandler
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -65,8 +66,7 @@ def send_message(chat_id, text):
     )
 
 
-def send_photo_with_button(chat_id, photo_url, caption, button_text, button_url):
-    keyboard = {"inline_keyboard": [[{"text": button_text, "url": button_url}]]}
+def send_photo(chat_id, photo_url, caption):
     requests.post(
         f"{TELEGRAM_API}/sendPhoto",
         json={
@@ -74,21 +74,6 @@ def send_photo_with_button(chat_id, photo_url, caption, button_text, button_url)
             "photo": photo_url,
             "caption": caption,
             "parse_mode": "Markdown",
-            "reply_markup": keyboard,
-        },
-        timeout=10,
-    )
-
-
-def send_text_with_button(chat_id, text, button_text, button_url):
-    keyboard = {"inline_keyboard": [[{"text": button_text, "url": button_url}]]}
-    requests.post(
-        f"{TELEGRAM_API}/sendMessage",
-        json={
-            "chat_id": chat_id,
-            "text": text,
-            "parse_mode": "Markdown",
-            "reply_markup": keyboard,
         },
         timeout=10,
     )
@@ -112,13 +97,13 @@ def reply_with_movie(chat_id, tmdb_id, user_id=None, username=None, search_query
     poster_path = movie.get("poster_path")
 
     watch_url = f"{SITE_BASE_URL}/{tmdb_id}"
-    caption = f"🎬 *{title}* ({year})\n⭐ Rating: {rating}/10\n\n{overview}"
+    caption = f"🎬 *{title}* ({year})\n⭐ Rating: {rating}/10\n\n{overview}\n\n🍿 **Watch Now:** {watch_url}"
 
     if poster_path:
         poster_url = f"{TMDB_IMAGE_BASE}{poster_path}"
-        send_photo_with_button(chat_id, poster_url, caption, "▶️ Watch Now", watch_url)
+        send_photo(chat_id, poster_url, caption)
     else:
-        send_text_with_button(chat_id, caption, "▶️ Watch Now", watch_url)
+        send_message(chat_id, caption)
 
     # Log this as a "watch_click" since we generated a Watch Now link for the user.
     log_event(user_id or chat_id, username, "watch_click", query=search_query, movie_title=title)
@@ -127,9 +112,21 @@ def reply_with_movie(chat_id, tmdb_id, user_id=None, username=None, search_query
 def handle_search(chat_id, query, user_id=None, username=None):
     log_event(user_id or chat_id, username, "search", query=query)
 
+    # Extract year if present at the end of the query (e.g. "Dune 2021")
+    year_match = re.search(r'\s*(19\d{2}|20\d{2})$', query)
+    params = {"api_key": TMDB_API_KEY, "query": query, "include_adult": False}
+    
+    clean_query = query
+    if year_match:
+        year = year_match.group(1)
+        clean_query = query[:year_match.start()].strip()
+        if clean_query: # only if they didn't just search "2021"
+            params["query"] = clean_query
+            params["primary_release_year"] = year
+
     resp = requests.get(
         TMDB_SEARCH_URL,
-        params={"api_key": TMDB_API_KEY, "query": query, "include_adult": False},
+        params=params,
         timeout=10,
     )
     if resp.status_code != 200:
@@ -141,7 +138,13 @@ def handle_search(chat_id, query, user_id=None, username=None):
         send_message(chat_id, f"❌ No movie found for '{query}'. Try a different spelling.")
         return
 
+    # Try to find an exact title match to improve accuracy
     top_match = results[0]
+    for r in results:
+        if r.get("title", "").lower() == clean_query.lower():
+            top_match = r
+            break
+
     reply_with_movie(chat_id, top_match["id"], user_id=user_id, username=username, search_query=query)
 
 
